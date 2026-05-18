@@ -15,6 +15,9 @@ import {
   Settings,
   User,
   Menu,
+  Eye,
+  EyeOff,
+  RefreshCw,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
@@ -38,6 +41,18 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { useToast } from "@/hooks/use-toast"
+import { supabase } from "@/lib/supabase"
 
 type ViewType = "dashboard" | "scanner" | "jamaah" | "rekap"
 
@@ -49,10 +64,19 @@ const navItems = [
 ]
 
 export default function DashboardPage() {
+  const { toast } = useToast()
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
   const [password, setPassword] = useState("")
   const [loginError, setLoginError] = useState("")
   const [isLoggingIn, setIsLoggingIn] = useState(false)
+
+  // Real-time Database Password States
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false)
+  const [dbPassword, setDbPassword] = useState("admin123")
+  const [newPassword, setNewPassword] = useState("")
+  const [showProfilePassword, setShowProfilePassword] = useState(false)
+  const [showLoginPassword, setShowLoginPassword] = useState(false)
+  const [isSavingPassword, setIsSavingPassword] = useState(false)
 
   const [activeView, setActiveView] = useState<ViewType>("dashboard")
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -69,24 +93,119 @@ export default function DashboardPage() {
     }
   }, [])
 
-  const handleLogin = (e: React.FormEvent) => {
+  // Sync password from database when authenticated
+  useEffect(() => {
+    async function fetchPassword() {
+      try {
+        const { data, error } = await supabase
+          .from('system_settings')
+          .select('setting_value')
+          .eq('setting_key', 'admin_password')
+          .single()
+        
+        if (data && data.setting_value) {
+          setDbPassword(data.setting_value)
+        } else if (error && error.code === 'PGRST116') {
+          // Row does not exist, seed it!
+          await supabase.from('system_settings').insert({
+            setting_key: 'admin_password',
+            setting_value: 'admin123',
+            setting_type: 'string',
+            description: 'Password akses portal admin/pengurus'
+          })
+          setDbPassword('admin123')
+        }
+      } catch (err) {
+        console.warn('Gagal membaca password dari database, menggunakan fallback admin123', err)
+      }
+    }
+
+    if (isAuthenticated) {
+      fetchPassword()
+    }
+  }, [isAuthenticated])
+
+  // Login handler connected to Supabase
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoggingIn(true)
+    setLoginError("")
     
-    const targetPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "admin123"
-    
-    // Simulate minor premium network delay for realistic visual feedback
-    setTimeout(() => {
-      if (password === targetPassword) {
-        localStorage.setItem("hadirmu_admin_auth", "true")
-        setIsAuthenticated(true)
-        setLoginError("")
-        setPassword("")
-      } else {
-        setLoginError("Password salah! Silakan coba lagi.")
+    try {
+      let targetPassword = "admin123"
+      
+      const { data, error } = await supabase
+        .from('system_settings')
+        .select('setting_value')
+        .eq('setting_key', 'admin_password')
+        .single()
+      
+      if (data && data.setting_value) {
+        targetPassword = data.setting_value
+      } else if (error && error.code === 'PGRST116') {
+        // Seed it if missing
+        await supabase.from('system_settings').insert({
+          setting_key: 'admin_password',
+          setting_value: 'admin123',
+          setting_type: 'string',
+          description: 'Password akses portal admin/pengurus'
+        })
       }
-      setIsLoggingIn(false)
-    }, 600)
+      
+      setTimeout(() => {
+        if (password === targetPassword) {
+          localStorage.setItem("hadirmu_admin_auth", "true")
+          setIsAuthenticated(true)
+          setDbPassword(targetPassword)
+          setLoginError("")
+          setPassword("")
+        } else {
+          setLoginError("Password salah! Silakan coba lagi.")
+        }
+        setIsLoggingIn(false)
+      }, 500)
+    } catch (err) {
+      console.error('Koneksi database terputus, mencocokkan dengan fallback local...', err)
+      setTimeout(() => {
+        const fallback = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "admin123"
+        if (password === fallback) {
+          localStorage.setItem("hadirmu_admin_auth", "true")
+          setIsAuthenticated(true)
+          setLoginError("")
+          setPassword("")
+        } else {
+          setLoginError("Password salah! Silakan coba lagi.")
+        }
+        setIsLoggingIn(false)
+      }, 500)
+    }
+  }
+
+  // Update password in database
+  const handleUpdatePassword = async () => {
+    if (!newPassword.trim()) return
+    setIsSavingPassword(true)
+    
+    try {
+      const { error } = await supabase
+        .from('system_settings')
+        .update({ setting_value: newPassword.trim(), updated_at: new Date().toISOString() })
+        .eq('setting_key', 'admin_password')
+      
+      if (error) {
+        toast({ title: 'Gagal memperbarui password', description: error.message, variant: 'destructive' })
+      } else {
+        setDbPassword(newPassword.trim())
+        setNewPassword("")
+        toast({ title: '✅ Password diperbarui', description: 'Gunakan password baru ini untuk masuk portal selanjutnya.' })
+        setProfileDialogOpen(false)
+      }
+    } catch (err) {
+      console.error(err)
+      toast({ title: 'Gagal menyimpan password', description: 'Periksa koneksi database Anda.', variant: 'destructive' })
+    } finally {
+      setIsSavingPassword(false)
+    }
   }
 
   const handleLogout = () => {
@@ -158,15 +277,28 @@ export default function DashboardPage() {
               <label className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                 Password Akses
               </label>
-              <input
-                type="password"
-                placeholder="Masukkan password admin..."
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full h-10 px-3 text-xs bg-muted/40 border border-border rounded-md text-foreground placeholder-muted-foreground/60 focus:outline-none focus:border-primary/50 transition-all font-mono tracking-widest text-center"
-                autoFocus
-                disabled={isLoggingIn}
-              />
+              <div className="relative">
+                <input
+                  type={showLoginPassword ? "text" : "password"}
+                  placeholder="Masukkan password admin..."
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full h-10 pl-3 pr-10 text-xs bg-muted/40 border border-border rounded-md text-foreground placeholder-muted-foreground/60 focus:outline-none focus:border-primary/50 transition-all font-mono tracking-widest text-center"
+                  autoFocus
+                  disabled={isLoggingIn}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(!showLoginPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none active:scale-95 transition-all"
+                >
+                  {showLoginPassword ? (
+                    <EyeOff className="h-4 w-4" strokeWidth={1.5} />
+                  ) : (
+                    <Eye className="h-4 w-4" strokeWidth={1.5} />
+                  )}
+                </button>
+              </div>
               {loginError && (
                 <p className="text-[10px] text-destructive text-center mt-1">
                   ⚠️ {loginError}
@@ -359,11 +491,11 @@ export default function DashboardPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44 rounded-md border-border">
-                <DropdownMenuItem className="text-xs cursor-pointer">
+                <DropdownMenuItem onClick={() => setProfileDialogOpen(true)} className="text-xs cursor-pointer">
                   <User className="mr-2 h-3.5 w-3.5" strokeWidth={1.5} />
                   Profil
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-xs cursor-pointer">
+                <DropdownMenuItem onClick={() => setProfileDialogOpen(true)} className="text-xs cursor-pointer">
                   <Settings className="mr-2 h-3.5 w-3.5" strokeWidth={1.5} />
                   Pengaturan
                 </DropdownMenuItem>
@@ -415,6 +547,99 @@ export default function DashboardPage() {
           })}
         </div>
       </nav>
+
+      {/* Dialog Profil & Ubah Password */}
+      <Dialog open={profileDialogOpen} onOpenChange={setProfileDialogOpen}>
+        <DialogContent className="sm:max-w-md mx-4 sm:mx-auto rounded-md border-border">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-semibold uppercase tracking-wide">
+              Profil & Keamanan Portal
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Kelola password keamanan untuk masuk ke Portal Admin & Pengurus HadirMu.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-3">
+            {/* Informasi Akun */}
+            <div className="flex items-center gap-3 p-3 rounded-md border border-border bg-muted/20">
+              <Avatar className="h-10 w-10">
+                <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
+                  AD
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <p className="text-xs font-semibold text-foreground uppercase">Administrator Portal</p>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Peran: Pengurus Piket / Admin</p>
+              </div>
+            </div>
+
+            {/* Password Saat Ini */}
+            <div className="space-y-1.5">
+              <Label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Password Saat Ini</Label>
+              <div className="relative">
+                <Input
+                  type={showProfilePassword ? "text" : "password"}
+                  value={dbPassword}
+                  readOnly
+                  className="h-9 text-xs rounded-md font-mono tracking-widest bg-muted/40 text-muted-foreground pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowProfilePassword(!showProfilePassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none"
+                >
+                  {showProfilePassword ? (
+                    <EyeOff className="h-4 w-4" strokeWidth={1.5} />
+                  ) : (
+                    <Eye className="h-4 w-4" strokeWidth={1.5} />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Ubah Password Baru */}
+            <div className="space-y-1.5">
+              <Label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ganti Password Baru</Label>
+              <Input
+                type="text"
+                placeholder="Masukkan password baru..."
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="h-9 text-xs rounded-md font-mono tracking-widest"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setProfileDialogOpen(false)
+                setNewPassword("")
+              }}
+              className="w-full sm:w-auto h-9 text-xs uppercase tracking-wide font-semibold rounded-md active:scale-98"
+            >
+              Tutup
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleUpdatePassword}
+              disabled={isSavingPassword || !newPassword.trim()}
+              className="w-full sm:w-auto h-9 text-xs uppercase tracking-wide font-semibold rounded-md active:scale-98"
+            >
+              {isSavingPassword ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                'Simpan Password'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
