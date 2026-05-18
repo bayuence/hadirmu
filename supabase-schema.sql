@@ -153,6 +153,7 @@ CREATE TRIGGER trigger_settings_updated_at
 INSERT INTO system_settings (setting_key, setting_value, setting_type, description) VALUES
   ('session_suspended', 'false',   'boolean', 'Whether the scan session is currently paused'),
   ('kelompok_name',     'Kelompok BP', 'string', 'Name of the jamaah group'),
+  ('admin_password',    'admin123', 'string',  'Password akses portal admin/pengurus'),
   ('app_version',       '1.0.0',   'string',  'Application version')
 ON CONFLICT (setting_key) DO NOTHING;
 
